@@ -88,13 +88,20 @@ template: |
   use Module::Install::ReadmeFromPod;
   use Module::Install::AuthorTests;
   use Module::Install::Repository
+
   name '[% dist %]';
   all_from 'lib/[% path %]';
   readme_from('lib/[% path %]');
+
+  # requires 'MODULE';
   build_requires 'Test::More';
   test_requires 'Test::Requires';
-  author_tests('xt');
-  auto_set_repository();
+
+  tests 't/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t t/*/*/*/*/*.t';
+  author_tests 'xt';
+
+  auto_install;
+  auto_set_repository;
   WriteAll;
 
 ---
