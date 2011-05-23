@@ -1,60 +1,83 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
+
 use strict;
 use warnings;
 use ExtUtils::MakeMaker qw(prompt);
 use File::Basename;
 use File::Path;
 use File::Spec;
-use Template;
+use Text::Xslate;
 use YAML;
-use Config::Pit;
+use Getopt::Long;
 
-my $config = pit_get("pmsetup", require => {
-    "author" => "Your name",
-    "email"  => "Your email",
-});
+GetOptions(
+    'xs' => \my $xs,
+    'help' => \my $help,
+);
+usage() if $help;
 
-while (! $config->{author}) {
-    $config->{author} = prompt("Your name: ", '');
+sub usage {
+    print "Usage: $0 [--xs] Module\n";
+    exit 0;
 }
 
-while (! $config->{email}) {
-    $config->{email} = prompt("Your email: ", '');
-}
+our $VERSION = '0.02';
 
-my $modname = shift @ARGV or die "Usage: $0 module\n";
+my $config = { 
+    author        => 'Kazuhiro Shibuya',
+    email         => 'stevenlabs at gmail dot com',
+};
+
+my $modname = shift @ARGV or usage();
    $modname =~ s/-/::/g;
 
 write_plugin_files($modname, $config);
-
 
 sub write_plugin_files {
     my($module, $config) = @_;
 
     # $module = "Foo::Bar"
+    # $suffix = "Bar"
     # $dist   = "Foo-Bar"
     # $path   = "Foo/Bar.pm"
-    my @pkg  = split /::/, $module;
-    my $dist = join "-", @pkg;
-    my $path = join("/", @pkg) . ".pm";
+    my @pkg    = split /::/, $module;
+    my $suffix = $pkg[ @pkg - 1 ];
+    my $dist   = join "-", @pkg;
+    my $path   = join( "/", @pkg ) . ".pm";
 
     mkdir $dist, 0777;
     chdir $dist;
 
     my @template = YAML::Load(join '', <DATA>);
-    my $vars = { module => $module, dist => $dist, path => $path,
-                 config => $config, localtime => scalar localtime, year => (localtime)[5] + 1900 };
+    my $vars = {
+        module    => $module,
+        dist      => $dist,
+        path      => $path,
+        xs        => $xs,
+        config    => $config,
+        localtime => scalar localtime
+    };
 
     for my $tmpl (@template) {
+        next if $tmpl->{xs} && !$xs;
+
         my $file = $tmpl->{file};
            $file =~ s/(\$\w+)/$1/eeg;
         write_file($file, $tmpl->{template}, $vars);
+        chmod oct($tmpl->{chmod}), $tmpl->{file} if $tmpl->{chmod};
     }
 
+    !system "ln -s lib/$path README.pod" or die $?;
+
     !system "perl Makefile.PL" or die $?;
-    !system 'make manifest' or die $?;
     !system 'make test' or die $?;
+    !system 'make manifest' or die $?;
     !system 'make distclean' or die $?;
+
+    # initialize git repository
+    !system("git init") or die $?;
+    !system("git add .") or die $?;
+    !system("git commit -m 'Initial import.'") or die $?;
 }
 
 sub write_file {
@@ -71,8 +94,8 @@ sub write_file {
         File::Path::mkpath($dir, 1, 0777);
     }
 
-    my $tt = Template->new;
-    $tt->process(\$template, $vars, \my $content);
+    my $tt = Text::Xslate->new(syntax => 'TTerse');
+    my $content = $tt->render_string($template, $vars);
 
     warn "Creating $path\n";
     open my $out, ">", $path or die "$path: $!";
@@ -80,30 +103,47 @@ sub write_file {
     close $out;
 }
 
+=pod
+
+original L<http://svn.bulknews.net/repos/public/misc/pmsetup>
+
+=cut
+
 __DATA__
+---
+xs: 1
+file: xs/$suffix.xs
+template: |
+  #include "xshelper.h"
+
+  MODULE = [% module %]    PACKAGE = [% module %]
 ---
 file: Makefile.PL
 template: |
   use inc::Module::Install;
-  use Module::Install::ReadmeFromPod;
+  [% IF xs -%]
+  use Module::Install::XSUtil 0.36;
+  [% END -%]
   use Module::Install::AuthorTests;
-  use Module::Install::Repository
 
   name '[% dist %]';
   all_from 'lib/[% path %]';
-  readme_from('lib/[% path %]');
 
-  # requires 'MODULE';
-  build_requires 'Test::More';
-  test_requires 'Test::Requires';
+  # requires '';
+  # requires 'Exporter' => 5.63; # use Exporter 'import';
+  # requires 'Plack' =>  0.9949;
 
-  tests 't/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t t/*/*/*/*/*.t';
-  author_tests 'xt';
+  [% IF xs %]
+  use_xshelper();
+  cc_warnings;
+  cc_src_paths qw(xs);
+  [% END %]
 
-  auto_install;
-  auto_set_repository;
+  tests 't/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t';
+  test_requires 'Test::More' => 0.96; # done_testing, subtest
+  # test_requires 'Test::Requires';
+  author_tests('xt');
   WriteAll;
-
 ---
 file: t/00_compile.t
 template: |
@@ -112,61 +152,106 @@ template: |
 
   BEGIN { use_ok '[% module %]' }
 ---
-file: xt/podspell.t
-template: |
-  use Test::More;
-  eval q{ use Test::Spelling };
-  plan skip_all => "Test::Spelling is not installed." if $@;
-  add_stopwords(<DATA>);
-  set_spell_cmd("aspell -l en list");
-  all_pod_files_spelling_ok('lib');
-  __DATA__
-  Kazuhiro
-  Shibuya
----
-file: xt/perlcritic.t
+file: xt/01_podspell.t
 template: |
   use strict;
   use Test::More;
-  eval q{ use Test::Perl::Critic };
-  plan skip_all => "Test::Perl::Critic is not installed." if $@;
-  all_critic_ok("lib");
+  eval q{ use Test::Spelling };
+  plan skip_all => "Test::Spelling is not installed." if $@;
+  add_stopwords(map { split /[\s\:\-]/ } <DATA>);
+  $ENV{LANG} = 'C';
+  my $spell_cmd;
+  foreach my $path (split(/:/, $ENV{PATH})) {
+      -x "$path/spell"  and $spell_cmd="spell", last;
+      -x "$path/ispell" and $spell_cmd="ispell -l", last;
+      -x "$path/aspell" and $spell_cmd="aspell list", last;
+  }
+  plan skip_all => "no spell/ispell/aspell" unless $spell_cmd;
+  
+  set_spell_cmd($spell_cmd);
+  all_pod_files_spelling_ok('lib');
+  __DATA__
+  [% config.author %]
+  [% module %]
+  tokuhirom
+  AAJKLFJEF
+  GMAIL
+  COM
+  Tatsuhiko
+  Miyagawa
+  Kazuhiro
+  Osawa
+  lestrrat
+  typester
+  cho45
+  charsbar
+  coji
+  clouder
+  gunyarakun
+  hio_d
+  hirose31
+  ikebe
+  kan
+  kazeburo
+  daisuke
+  maki
+  TODO
+  API
+  URL
+  URI
+  db
+  TTerse
+  irc
+  org
+  CSS
+  Amon
 ---
-file: xt/pod.t
+file: xt/02_perlcritic.t
+template: |
+  use strict;
+  use Test::More;
+  eval q{
+      use Test::Perl::Critic 1.02 -exclude => [
+          'Subroutines::ProhibitSubroutinePrototypes',
+          'Subroutines::ProhibitExplicitReturnUndef',
+          'TestingAndDebugging::ProhibitNoStrict',
+          'ControlStructures::ProhibitMutatingListFunctions',
+      ]
+  };
+  plan skip_all => "Test::Perl::Critic 1.02+ is not installed." if $@;
+  all_critic_ok('lib');
+---
+file: xt/03_pod.t
 template: |
   use Test::More;
   eval "use Test::Pod 1.00";
   plan skip_all => "Test::Pod 1.00 required for testing POD" if $@;
   all_pod_files_ok();
 ---
-file: xt/synopsis.t
-template: |
-  use Test::More;
-  eval "use Test::Synopsis";
-  plan skip_all => "Test::Synopsis required" if $@;
-  all_synopsis_ok();
----
 file: Changes
 template: |
   Revision history for Perl extension [% module %]
 
-  0.01  [% localtime %]
+  0.01    [% localtime %]
           - original version
 ---
 file: lib/$path
 template: |
   package [% module %];
-
   use strict;
   use warnings;
+  use 5.008001;
   our $VERSION = '0.01';
+
+  [% IF xs %]
+  require XSLoader;
+  XSLoader::load('[% module %]', $VERSION);
+  [% END %]
 
   1;
   __END__
 
-  =encoding utf-8
-
-  =for stopwords
+  =encoding utf8
 
   =head1 NAME
 
@@ -184,76 +269,91 @@ template: |
 
   [% config.author %] E<lt>[% config.email %]E<gt>
 
-  =head1 COPYRIGHT
-
-  Copyright [% year %]- [% config.author %]
+  =head1 SEE ALSO
 
   =head1 LICENSE
 
+  Copyright (C) [% config.author %]
+
   This library is free software; you can redistribute it and/or modify
   it under the same terms as Perl itself.
-
-  =head1 SEE ALSO
 
   =cut
 ---
 file: MANIFEST.SKIP
 template: |
+  ^\.git/
   \bRCS\b
   \bCVS\b
-  \.svn/
-  \.git/
   ^MANIFEST\.
   ^Makefile$
   ~$
+  ^#
   \.old$
   ^blib/
   ^pm_to_blib
   ^MakeMaker-\d
   \.gz$
   \.cvsignore
-  \.shipit
+  ^t/perlcritic
+  ^tools/
+  \.svn/
+  ^[^/]+\.yaml$
+  ^[^/]+\.pl$
+  ^\.shipit$
+  \.sw[po]$
+  ^Build$
+  ^ppport.h$
+  ^xshelper.h$
+  cover_db
+  nytprof
+  perltidy.ERR$
+  ^README.pod$
+  ^tags$
+---
+file: .shipit
+chmod: 0644
+template: |
+  steps = FindVersion, ChangeVersion, CheckChangeLog, DistTest, Commit, Tag, MakeDist, UploadCPAN
+  git.push_to=origin
+---
+file: .gitignore
+chmod: 0644
+template: |
+  Makefile
+  inc/
+  [% suffix %].c
+  ppport.h
+  *.sw[po]
+  *.bak
+  *.old
+  Build
+  _build/
+  xshelper.h
+  tags
 ---
 file: README
 template: |
   This is Perl module [% module %].
-
+  
   INSTALLATION
-
+  
   [% module %] installation is straightforward. If your CPAN shell is set up,
   you should just be able to do
-
-      % cpan [% module %]
-
+  
+  % cpan [% module %]
+  
   Download it, unpack it, then build it as per the usual:
-
-      % perl Makefile.PL
-      % make && make test
-
+  
+  % perl Makefile.PL
+  % make && make test
+  
   Then install it:
-
-      % make install
-
+  
+  % make install
+  
   DOCUMENTATION
-
+  
   [% module %] documentation is available as in POD. So you can do:
-
-      % perldoc [% module %]
-
-  to read the documentation online with your favorite pager.
-
-  [% config.author %]
----
-file: .shipit
-template: |
-  steps = FindVersion, ChangeVersion, CheckChangeLog, DistTest, Commit, Tag, MakeDist, UploadCPAN
-  git.push_to = origin
----
-file: .gitignore
-template: |
-  META.yml
-  Makefile
-  inc/
-  pm_to_blib
-  *~
-
+  
+  % perldoc [% module %]
