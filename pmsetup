@@ -11,17 +11,16 @@ use YAML;
 use Getopt::Long;
 
 GetOptions(
-    'xs' => \my $xs,
     'help' => \my $help,
 );
 usage() if $help;
 
 sub usage {
-    print "Usage: $0 [--xs] Module\n";
+    print "Usage: $0 Module\n";
     exit 0;
 }
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 my $config = { 
     author        => 'Kazuhiro Shibuya',
@@ -53,13 +52,11 @@ sub write_plugin_files {
         module    => $module,
         dist      => $dist,
         path      => $path,
-        xs        => $xs,
         config    => $config,
         localtime => scalar localtime
     };
 
     for my $tmpl (@template) {
-        next if $tmpl->{xs} && !$xs;
 
         my $file = $tmpl->{file};
            $file =~ s/(\$\w+)/$1/eeg;
@@ -111,39 +108,23 @@ original L<http://svn.bulknews.net/repos/public/misc/pmsetup>
 
 __DATA__
 ---
-xs: 1
-file: xs/$suffix.xs
-template: |
-  #include "xshelper.h"
-
-  MODULE = [% module %]    PACKAGE = [% module %]
----
 file: Makefile.PL
 template: |
-  use inc::Module::Install;
-  [% IF xs -%]
-  use Module::Install::XSUtil 0.36;
-  [% END -%]
-  use Module::Install::AuthorTests;
+  use ExtUtils::MakeMaker;
 
-  name '[% dist %]';
-  all_from 'lib/[% path %]';
-
-  # requires '';
-  # requires 'Exporter' => 5.63; # use Exporter 'import';
-  # requires 'Plack' =>  0.9949;
-
-  [% IF xs %]
-  use_xshelper();
-  cc_warnings;
-  cc_src_paths qw(xs);
-  [% END %]
-
-  tests 't/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t';
-  test_requires 'Test::More' => 0.96; # done_testing, subtest
-  # test_requires 'Test::Requires';
-  author_tests('xt');
-  WriteAll;
+  WriteMakefile(
+      NAME         => '[% module %]',
+      AUTHOR       => '[% config.author %]',
+      VERSION_FROM => 'lib/[% path %]',
+      PREREQ_PM    => {
+      },
+      MIN_PERL_VERSION => '5.008001',
+      (-d 'xt' and $ENV{AUTOMATED_TESTING} || $ENV{RELEASE_TESTING}) ? (
+          test => {
+              TESTS => 't/*.t t/*/*.t t/*/*/*.t t/*/*/*/*.t'
+          },
+      ) : (),
+  );
 ---
 file: t/00_compile.t
 template: |
@@ -243,10 +224,6 @@ template: |
   use 5.008001;
   our $VERSION = '0.01';
 
-  [% IF xs %]
-  require XSLoader;
-  XSLoader::load('[% module %]', $VERSION);
-  [% END %]
 
   1;
   __END__
